@@ -109,16 +109,21 @@
       script.onload = () => {
         createUnityInstance(canvas, config, (progress) => {
           document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
-              }).then((unityInstance) => {
-                document.querySelector("#unity-loading-bar").style.display = "none";
-                document.querySelector("#unity-fullscreen-button").onclick = () => {
-                  unityInstance.SetFullscreen(1);
-                };
+        }).then((unityInstance) => {
+          document.querySelector("#unity-loading-bar").style.display = "none";
+          document.querySelector("#unity-fullscreen-button").onclick = () => {
+            unityInstance.SetFullscreen(1);
+          };
 
-              }).catch((message) => {
-                alert(message);
-              });
-            };
+          // ✅ FIX: Place your WebSocket logic here
+          // This code will only run after the Unity instance is loaded
+          window.unityInstance = unityInstance;
+          window.unityInstance.SendMessage('WebSocketManager', 'InitializeWebSocket', 'wss://server-kitchenrumble.onrender.com');
+
+        }).catch((message) => {
+          alert(message);
+        });
+      };
 
       document.body.appendChild(script);
 
