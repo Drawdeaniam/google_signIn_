@@ -119,7 +119,7 @@
           // ✅ FIX: Place your WebSocket logic here
           // This code will only run after the Unity instance is loaded
           window.unityInstance = unityInstance;
-          window.unityInstance.SendMessage('WebSocketManager', 'InitializeWebSocket', 'wss://server-kitchenrumble.onrender.com');
+          window.unityInstance.SendMessage('WebSocketManager', 'InitWebSocket', 'wss://server-kitchenrumble.onrender.com');
 
         }).catch((message) => {
           alert(message);
