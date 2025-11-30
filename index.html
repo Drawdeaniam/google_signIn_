@@ -1,1053 +1,131 @@
-"""
-Kitchen Rumble Server - Production Ready for 1000-1500 Users
-Target Region: Kenya & East Africa
-Supports: Multi-instance deployment with Redis, health checks, metrics
-"""
-
-import json
-import asyncio
-import random
-import os
-import signal
-import time
-from typing import Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-import asyncpg
-from datetime import datetime
-
-# ============== CONFIGURATION ==============
-
-REDIS_HOST = os.getenv("REDIS_HOST", "redis-18528.c253.us-central1-1.gce.redns.redis-cloud.com")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "18528"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "77eGCKdfNzxyt20IxK50u5g6eXxxbpNm")
-REDIS_USERNAME = os.getenv("REDIS_USERNAME", "default")
-USE_REDIS = os.getenv("USE_REDIS", "true").lower() == "true"
-
-# ✅ PHASE 3B: Database configuration
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://chef_bet_databasev_user:LA34c2PIQx7yWAkHIxsioV8BoZf5mYsA@dpg-d4gm23emcj7s73bgoglg-a.oregon-postgres.render.com/chef_bet_databasev?sslmode=require"  # Replace with your actual URL
-)
-
-INSTANCE_ID = os.getenv("HOSTNAME", f"local-{os.getpid()}")
-
-MAX_PLAYERS_PER_ROOM = 2
-FOOD_SPAWN_INTERVAL = 7
-FOOD_PREFAB_COUNT = 9
-FOOD_BOUNDS = {"x": (-1.53, 1.53), "y": (-2.0, 2.0)}
-
-# ✅ PHASE 3B: Time banking constants
-MAX_TIME_BANK_CAPACITY = 300  # Maximum 300 seconds (5 minutes) can be banked
-MAX_USABLE_PERCENTAGE = 0.5   # Players can use up to 50% of their bank per match
-MAX_TIME_PER_MATCH = 60       # From Phase 3A
-
-redis_client = None
-db_pool = None  # ✅ PHASE 3B: Database connection pool
-
-if USE_REDIS:
-    import redis.asyncio as aioredis
-
-rooms: Dict[str, Dict[str, WebSocket]] = {}
-room_triggers = {}
-active_listeners = {}
-room_timers = {}  # ✅ PHASE 2: Track match timers per room
-room_time_rewards = {}  # ✅ PHASE 3: Track time earned per player {room_id: {player_id: seconds_earned}}
-shutdown_flag = False
-
-metrics = {
-    "total_connections": 0,
-    "active_connections": 0,
-    "messages_relayed": 0,
-    "projectile_hits": 0,
-    "food_spawned": 0,
-    "food_removed": 0,
-    "start_time": time.time()
-}
-
-# ============== FASTAPI APP ==============
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-# ============== REDIS FUNCTIONS ==============
-
-async def init_redis():
-    global redis_client
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Unity WebGL Player | Kitchen Rumble</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
     
-    if not USE_REDIS:
-        print("⚠️ Running without Redis (single instance mode)")
-        return None
+    <!-- Google Sign-In SDK -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     
-    try:
-        redis_client = aioredis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
-            username=REDIS_USERNAME,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_connect_timeout=5,
-            socket_keepalive=True,
-            max_connections=30
-        )
-        
-        await redis_client.ping()
-        print(f"✅ Redis connected: {REDIS_HOST}:{REDIS_PORT}")
-        return redis_client
-        
-    except Exception as e:
-        print(f"❌ Redis connection failed: {e}")
-        print("⚠️ Falling back to single instance mode")
-        redis_client = None
-        return None
+    <script>
+        var unityInstance;
 
-# ============== PHASE 3B: DATABASE FUNCTIONS ==============
+        // Global function to set Unity instance (accessible from both Unity and Google Sign-In)
+        function setUnityInstance(instance) {
+            unityInstance = instance;
+            window.unityInstance = instance;
+            console.log("✅ Unity instance set globally");
+        }
+    </script>
+</head>
+<body>
+    <div id="unity-container" class="unity-desktop">
+        <canvas id="unity-canvas" width="960" height="600" tabindex="-1"></canvas>
+        <div id="unity-loading-bar">
+            <div id="unity-logo"></div>
+            <div id="unity-progress-bar-empty">
+                <div id="unity-progress-bar-full"></div>
+            </div>
+        </div>
+        <div id="unity-warning"></div>
+        <div id="unity-footer">
+            <div id="unity-webgl-logo"></div>
+            <div id="unity-fullscreen-button"></div>
+            <div id="unity-build-title">Kitchen Rumble</div>
+        </div>
+    </div>
 
-async def init_database():
-    """Initialize PostgreSQL database connection pool"""
-    global db_pool
-    
-    try:
-        db_pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            command_timeout=5.0,
-            timeout=30.0
-        )
-        
-        # Test connection
-        async with db_pool.acquire() as conn:
-            await conn.fetchval('SELECT 1')
-        
-        print(f"✅ Database connected: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'local'}")
-        return db_pool
-        
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        print("⚠️ Time banking features will not work!")
-        db_pool = None
-        return None
+    <script>
+        var container = document.querySelector("#unity-container");
+        var canvas = document.querySelector("#unity-canvas");
+        var loadingBar = document.querySelector("#unity-loading-bar");
+        var progressBarFull = document.querySelector("#unity-progress-bar-full");
+        var fullscreenButton = document.querySelector("#unity-fullscreen-button");
+        var warningBanner = document.querySelector("#unity-warning");
 
-async def get_player_time_bank(database_id: int) -> dict:
-    """Get player's time bank info from database using database ID"""
-    if db_pool is None:
-        print("⚠️ Database not available")
-        return {"balance": 0, "total_earned": 0}
-    
-    try:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                '''
-                SELECT time_bank_seconds, total_time_earned 
-                FROM players 
-                WHERE id = $1
-                ''',
-                database_id
-            )
-            
-            if row:
-                return {
-                    "balance": row['time_bank_seconds'] or 0,
-                    "total_earned": row['total_time_earned'] or 0
-                }
-            else:
-                print(f"⚠️ Player (database_id={database_id}) not found in database")
-                return {"balance": 0, "total_earned": 0}
-                
-    except Exception as e:
-        print(f"❌ Error fetching time bank for database_id={database_id}: {e}")
-        return {"balance": 0, "total_earned": 0}
-
-async def deduct_time_bank(database_id: int, seconds_to_use: int) -> dict:
-    """Deduct time from player's bank and return new balance using database ID"""
-    if db_pool is None:
-        return {"success": False, "error": "Database not available"}
-    
-    try:
-        async with db_pool.acquire() as conn:
-            # Use transaction to ensure atomicity
-            async with conn.transaction():
-                # Get current balance
-                current_balance = await conn.fetchval(
-                    'SELECT time_bank_seconds FROM players WHERE id = $1',
-                    database_id
-                )
-                
-                if current_balance is None:
-                    return {"success": False, "error": f"Player not found (database_id={database_id})"}
-                
-                if current_balance < seconds_to_use:
-                    return {"success": False, "error": f"Insufficient balance: {current_balance}s < {seconds_to_use}s"}
-                
-                # Deduct time
-                new_balance = await conn.fetchval(
-                    '''
-                    UPDATE players 
-                    SET time_bank_seconds = time_bank_seconds - $1,
-                        last_bank_update = NOW()
-                    WHERE id = $2
-                    RETURNING time_bank_seconds
-                    ''',
-                    seconds_to_use,
-                    database_id
-                )
-                
-                return {"success": True, "new_balance": new_balance}
-                
-    except Exception as e:
-        print(f"❌ Error deducting time bank for database_id={database_id}: {e}")
-        return {"success": False, "error": str(e)}
-
-async def add_time_to_bank(database_id: int, seconds_to_add: int, time_earned_this_match: int) -> dict:
-    """Add time to player's bank (capped at MAX_TIME_BANK_CAPACITY) using database ID"""
-    if db_pool is None:
-        return {"success": False, "error": "Database not available"}
-    
-    try:
-        async with db_pool.acquire() as conn:
-            # Get current balance before update
-            old_balance = await conn.fetchval(
-                'SELECT time_bank_seconds FROM players WHERE id = $1',
-                database_id
-            )
-            
-            if old_balance is None:
-                return {"success": False, "error": f"Player not found (database_id={database_id})"}
-            
-            # Cap at max capacity
-            result = await conn.fetchrow(
-                '''
-                UPDATE players 
-                SET time_bank_seconds = LEAST(time_bank_seconds + $1, $2),
-                    total_time_earned = total_time_earned + $3,
-                    last_bank_update = NOW()
-                WHERE id = $4
-                RETURNING time_bank_seconds, total_time_earned
-                ''',
-                seconds_to_add,
-                MAX_TIME_BANK_CAPACITY,
-                time_earned_this_match,
-                database_id
-            )
-            
-            if result:
-                new_balance = result['time_bank_seconds']
-                actual_banked = new_balance - old_balance  # How much was actually added (might be less due to cap)
-                
-                return {
-                    "success": True,
-                    "new_balance": new_balance,
-                    "total_earned": result['total_time_earned'],
-                    "actual_banked": actual_banked
-                }
-            else:
-                return {"success": False, "error": "Update failed"}
-                
-    except Exception as e:
-        print(f"❌ Error adding to time bank for database_id={database_id}: {e}")
-        return {"success": False, "error": str(e)}
-
-# ============== REDIS ROOM FUNCTIONS ==============
-
-async def get_or_create_room() -> str:
-    if redis_client:
-        room_keys = await redis_client.keys("room:*:players")
-        
-        for key in room_keys:
-            room_id = key.split(":")[1]
-            player_count = await redis_client.hlen(key)
-            
-            if player_count < MAX_PLAYERS_PER_ROOM:
-                print(f"🏠 Found available room: {room_id} ({player_count}/{MAX_PLAYERS_PER_ROOM})")
-                return room_id
-        
-        room_counter = await redis_client.incr("room_counter")
-        room_id = f"room_{room_counter}"
-        print(f"🆕 Created new room: {room_id}")
-        return room_id
-    
-    else:
-        for room_id, players in rooms.items():
-            if len(players) < MAX_PLAYERS_PER_ROOM:
-                return room_id
-        
-        room_id = f"room_{len(rooms) + 1}"
-        print(f"🆕 Created new room: {room_id}")
-        return room_id
-
-async def add_player_to_room(room_id: str, player_id: str, websocket: WebSocket):
-    if room_id not in rooms:
-        rooms[room_id] = {}
-        room_triggers[room_id] = set()
-    
-    rooms[room_id][player_id] = websocket
-    
-    if redis_client:
-        await redis_client.hset(f"room:{room_id}:players", player_id, INSTANCE_ID)
-        await redis_client.expire(f"room:{room_id}:players", 7200)
-
-async def get_room_players(room_id: str) -> list:
-    if redis_client:
-        return await redis_client.hkeys(f"room:{room_id}:players")
-    else:
-        return list(rooms.get(room_id, {}).keys())
-
-async def remove_player_from_room(room_id: str, player_id: str):
-    if room_id in rooms and player_id in rooms[room_id]:
-        del rooms[room_id][player_id]
-    
-    if redis_client:
-        await redis_client.hdel(f"room:{room_id}:players", player_id)
-        remaining = await redis_client.hlen(f"room:{room_id}:players")
-        
-        if remaining == 0:
-            await redis_client.delete(f"room:{room_id}:players")
-    
-    if room_id in rooms and len(rooms[room_id]) == 0:
-        del rooms[room_id]
-        room_triggers.pop(room_id, None)
-
-async def broadcast_match_start(room_id: str):
-    """
-    ✅ PHASE 2: Broadcasts MATCH_START with server-authoritative end time.
-    Sends server timestamp for time synchronization and starts periodic time sync.
-    """
-    players = await get_room_players(room_id)
-    
-    if len(players) != MAX_PLAYERS_PER_ROOM:
-        return
-    
-    server_start_time = int(time.time() * 1000)  # Unix timestamp in milliseconds
-    initial_duration = 60.0  # 60 seconds match duration
-    match_end_time = server_start_time + int(initial_duration * 1000)  # ✅ PHASE 2: Calculate end time
-    
-    # ✅ PHASE 2: Store match end time for this room
-    room_timers[room_id] = {
-        "match_end_time": match_end_time,
-        "start_time": server_start_time,
-        "duration": initial_duration
-    }
-    
-    # ✅ PHASE 3: Initialize time rewards tracking for this room
-    room_time_rewards[room_id] = {
-        players[0]: 0,  # Track time earned by each player
-        players[1]: 0
-    }
-    
-    match_start_msg = {
-        "type": "match_start",
-        "player1Id": players[0],
-        "player2Id": players[1],
-        "serverStartTime": server_start_time,
-        "initialDuration": initial_duration,
-        "matchEndTime": match_end_time  # ✅ PHASE 2: Server-authoritative end time
-    }
-    
-    print(f"\n🎮 {'='*60}")
-    print(f"   MATCH START - Room: {room_id}")
-    print(f"   Players: {players[0]} vs {players[1]}")
-    print(f"   Server Time: {server_start_time}")
-    print(f"   Match End Time: {match_end_time}")  # ✅ PHASE 2
-    print(f"   Duration: {initial_duration}s")
-    print(f"{'='*60}\n")
-    
-    await broadcast_to_room(room_id, match_start_msg)
-    
-    # ✅ PHASE 2: Start periodic time sync
-    asyncio.create_task(periodic_time_sync(room_id))
-    print(f"  ⏱️ Started periodic time sync for room {room_id}")
-
-async def periodic_time_sync(room_id: str):
-    """
-    ✅ PHASE 2: Send time sync every 5 seconds until match ends.
-    Ensures all clients stay synchronized with server time.
-    """
-    try:
-        while room_id in room_timers:
-            await asyncio.sleep(5)  # Sync every 5 seconds
-            
-            if room_id not in room_timers:
-                break
-            
-            current_server_time = int(time.time() * 1000)
-            match_end_time = room_timers[room_id]["match_end_time"]
-            
-            time_remaining_ms = match_end_time - current_server_time
-            
-            if time_remaining_ms <= 0:
-                # Match ended
-                print(f"  ⏰ Match in room {room_id} has ended")
-                await broadcast_to_room(room_id, {
-                    "type": "match_end",
-                    "matchEndTime": match_end_time
-                })
-                del room_timers[room_id]
-                break
-            
-            # Send time sync
-            sync_msg = {
-                "type": "time_sync",
-                "currentServerTime": current_server_time,
-                "matchEndTime": match_end_time,
-                "timeRemainingMs": time_remaining_ms
+        function unityShowBanner(msg, type) {
+            function updateBannerVisibility() {
+                warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
             }
-            
-            await broadcast_to_room(room_id, sync_msg)
-            print(f"  ⏱️ Time sync [{room_id}]: {time_remaining_ms / 1000:.1f}s remaining")
-            
-    except Exception as e:
-        print(f"  ⚠️ Error in time sync for room {room_id}: {e}")
-        if room_id in room_timers:
-            del room_timers[room_id]
 
-async def broadcast_to_room(room_id: str, message: dict, exclude_player: str = None):
-    """
-    Broadcasts message to all players in a room.
-    - Sends to local WebSocket connections immediately
-    - Publishes to Redis for cross-instance communication (if enabled)
-    """
-    # ✅ ALWAYS send to LOCAL WebSocket connections first
-    if room_id in rooms:
-        for pid, ws in list(rooms[room_id].items()):
-            if pid != exclude_player:
-                try:
-                    await ws.send_text(json.dumps(message))
-                    metrics["messages_relayed"] += 1
-                except Exception as e:
-                    # Connection failed, will be cleaned up in websocket_endpoint
-                    pass
-    
-    # ✅ THEN publish to Redis for OTHER instances (if Redis enabled)
-    if redis_client:
-        message["_exclude"] = exclude_player
-        message["_instance"] = INSTANCE_ID
-        try:
-            await redis_client.publish(f"room:{room_id}:events", json.dumps(message))
-        except Exception as e:
-            print(f"⚠️ Redis publish failed: {e}")
+            var div = document.createElement('div');
+            div.innerHTML = msg;
+            warningBanner.appendChild(div);
 
-async def redis_listener(room_id: str):
-    """
-    Listens to Redis pub/sub for messages from OTHER instances.
-    Skips messages from the same instance (already sent via WebSocket).
-    """
-    if not redis_client:
-        return
-    
-    pubsub = redis_client.pubsub()
-    
-    try:
-        await pubsub.subscribe(f"room:{room_id}:events")
-        print(f"👂 [{INSTANCE_ID}] Listening to {room_id}")
-        
-        async for message in pubsub.listen():
-            if shutdown_flag:
-                break
-            
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    exclude_player = data.pop("_exclude", None)
-                    source_instance = data.pop("_instance", None)
-                    
-                    # Skip messages from same instance (already sent via WebSocket)
-                    if source_instance == INSTANCE_ID:
-                        continue
-                    
-                    # Broadcast to local connections from OTHER instances
-                    if room_id in rooms:
-                        for player_id, ws in list(rooms[room_id].items()):
-                            if player_id != exclude_player:
-                                try:
-                                    await ws.send_text(json.dumps(data))
-                                    metrics["messages_relayed"] += 1
-                                except:
-                                    pass
-                except Exception as e:
-                    print(f"❌ Redis listener error: {e}")
-    
-    except asyncio.CancelledError:
-        pass
-    finally:
-        try:
-            await pubsub.unsubscribe(f"room:{room_id}:events")
-            await pubsub.close()
-        except:
-            pass
-
-# ============== FOOD SPAWNING ==============
-
-async def spawn_food_to_room(room_id: str):
-    instance_counter = 0
-    print(f"🍎 Food spawning started for {room_id}")
-    
-    try:
-        while not shutdown_flag:
-            await asyncio.sleep(FOOD_SPAWN_INTERVAL)
-            
-            players = await get_room_players(room_id)
-            if not players:
-                print(f"🍎 Food spawning stopped for {room_id} (no players)")
-                break
-            
-            instance_counter += 1
-            prefab_id = random.randint(0, FOOD_PREFAB_COUNT - 1)
-            
-            pos = [
-                round(random.uniform(*FOOD_BOUNDS["x"]), 2),
-                round(random.uniform(*FOOD_BOUNDS["y"]), 2),
-                0.0,
-            ]
-            
-            food_msg = {
-                "type": "spawn_food",
-                "instanceId": instance_counter,
-                "prefabId": prefab_id,
-                "pos": pos
+            if (type === 'error') {
+                div.style = 'background: red; padding: 10px;';
+            } else {
+                if (type === 'warning') div.style = 'background: yellow; padding: 10px;';
+                setTimeout(() => {
+                    warningBanner.removeChild(div);
+                    updateBannerVisibility();
+                }, 5000);
             }
-            
-            await broadcast_to_room(room_id, food_msg)
-            metrics["food_spawned"] += 1
-    
-    except asyncio.CancelledError:
-        pass
-    finally:
-        print(f"🍎 Food spawning stopped for {room_id}")
 
-# ============== WEBSOCKET ENDPOINT ==============
+            updateBannerVisibility();
+        }
 
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    print(f"🔌 Connection from {client_id}")
-    await websocket.accept()
-    
-    metrics["total_connections"] += 1
-    metrics["active_connections"] += 1
-    
-    player_id = None
-    assigned_room = None
-    
-    try:
-        data = await websocket.receive_text()
-        msg = json.loads(data)
-        
-        if msg.get("type") != "join":
-            print(f"❌ First message not 'join': {msg.get('type')}")
-            await websocket.close(code=1008, reason="First message must be 'join'.")
-            return
-        
-        player_id = msg.get("playerId")
-        if not player_id:
-            print(f"❌ Join message missing playerId")
-            await websocket.close(code=1008, reason="'join' message missing playerId.")
-            return
-        
-        print(f"\n📥 Player '{player_id}' attempting to join")
-        
-        assigned_room = await get_or_create_room()
-        
-        existing_players = await get_room_players(assigned_room)
-        existing_players = [p for p in existing_players if p != player_id]
-        
-        print(f"  📊 Room '{assigned_room}' currently has {len(existing_players)} player(s): {existing_players}")
-        
-        # ✅ STEP 1: Send self-spawn FIRST
-        self_spawn_msg = json.dumps({"type": "spawn", "playerId": player_id})
-        await websocket.send_text(self_spawn_msg)
-        print(f"  ✅ [1/5] Sent SELF-spawn to '{player_id}'")
-        
-        # ✅ STEP 2: Tell NEW player about EXISTING players
-        if existing_players:
-            print(f"  📤 [2/5] Telling '{player_id}' about {len(existing_players)} existing player(s)")
-            for pid in existing_players:
-                spawn_msg = json.dumps({"type": "spawn", "playerId": pid})
-                await websocket.send_text(spawn_msg)
-                print(f"      → Sent spawn for '{pid}'")
-        else:
-            print(f"  ℹ️ [2/5] No existing players in room")
-        
-        # ✅ STEP 3: Add player to room
-        await add_player_to_room(assigned_room, player_id, websocket)
-        print(f"  ✅ [3/5] Added '{player_id}' to room")
-        
-        # ✅ STEP 4: Start Redis listener if needed
-        if redis_client and assigned_room not in active_listeners:
-            listener_task = asyncio.create_task(redis_listener(assigned_room))
-            active_listeners[assigned_room] = listener_task
-            print(f"  👂 [4/5] Started Redis listener for '{assigned_room}'")
-        else:
-            print(f"  ℹ️ [4/5] Redis listener already active or not needed")
-        
-        # ✅ STEP 5: Tell EXISTING players about NEW player
-        if existing_players:
-            print(f"  📤 [5/5] Telling {len(existing_players)} existing player(s) about '{player_id}'")
-            await broadcast_to_room(assigned_room, {
-                "type": "spawn",
-                "playerId": player_id
-            }, exclude_player=player_id)
-        else:
-            print(f"  ℹ️ [5/5] No existing players to notify")
-        
-        if len(existing_players) == 0:
-            asyncio.create_task(spawn_food_to_room(assigned_room))
-        
-        total_players = len(existing_players) + 1
-        print(f"  📊 Room '{assigned_room}' now has {total_players}/{MAX_PLAYERS_PER_ROOM} players\n")
-        
-        # ✅ PHASE 1: Check if room is full and broadcast MATCH_START
-        total_players_in_room = await get_room_players(assigned_room)
-        if len(total_players_in_room) == MAX_PLAYERS_PER_ROOM:
-            print(f"  🎮 Room full! Broadcasting MATCH_START")
-            await broadcast_match_start(assigned_room)
-        else:
-            print(f"  ⏳ Waiting for more players ({len(total_players_in_room)}/{MAX_PLAYERS_PER_ROOM})")
-        
-        # ============== MAIN MESSAGE RELAY LOOP ==============
-        while not shutdown_flag:
-            data = await websocket.receive_text()
-            msg = json.loads(data)
-            msg_type = msg.get("type")
-            
-            # 🍎 Handle food removal
-            if msg_type == "remove_food":
-                food_id = msg.get("foodId")
-                print(f"🍎 Food {food_id} removed by {player_id}")
-                
-                await broadcast_to_room(assigned_room, {
-                    "type": "remove_food",
-                    "foodId": food_id
-                })
-                metrics["food_removed"] += 1
-            
-            # Handle player-triggered food spawn activation
-            elif msg_type == "start_food_spawn":
-                room_triggers[assigned_room].add(player_id)
-                if len(room_triggers[assigned_room]) >= MAX_PLAYERS_PER_ROOM:
-                    asyncio.create_task(spawn_food_to_room(assigned_room))
-            
-            # 🎯 Handle shooting
-            elif msg_type == "shoot":
-                direction = msg.get("shootDirection", [0, 0])
-                await broadcast_to_room(assigned_room, {
-                    "type": "shoot",
-                    "playerId": player_id,
-                    "shootDirection": direction
-                }, exclude_player=player_id)
-            
-            elif msg_type == "stop_shoot":
-                await broadcast_to_room(assigned_room, {
-                    "type": "stop_shoot",
-                    "playerId": player_id
-                }, exclude_player=player_id)
-            
-            # Handle level/stage updates
-            elif msg_type == "level_update":
-                stage_index = msg.get("stageIndex", 0)
-                await broadcast_to_room(assigned_room, {
-                    "type": "level_update",
-                    "playerId": player_id,
-                    "stageIndex": stage_index
-                }, exclude_player=player_id)
-            
-            # 💥 Handle projectile hits
-            elif msg_type == "projectile_hit":
-                shooter_id = msg.get("shooterId")
-                victim_id = msg.get("victimId")
-                halt_duration = msg.get("haltDuration", 2.0)
-                
-                print(f"\n💥 [Projectile Hit] {shooter_id} → {victim_id} (duration: {halt_duration}s)")
-                
-                all_players = await get_room_players(assigned_room)
-                
-                if shooter_id in all_players and victim_id in all_players:
-                    await broadcast_to_room(assigned_room, {
-                        "type": "player_halted",
-                        "shooterId": shooter_id,
-                        "victimId": victim_id,
-                        "haltDuration": halt_duration
-                    })
-                    
-                    metrics["projectile_hits"] += 1
-                    print(f"  ✅ Broadcasted halt to room '{assigned_room}'")
-                else:
-                    print(f"  ⚠️ Invalid: shooter or victim not in room")
-                    print(f"     Shooter in room: {shooter_id in all_players}")
-                    print(f"     Victim in room: {victim_id in all_players}\n")
-            
-            # ✅ PHASE 3: Handle stage completion and time rewards
-            elif msg_type == "stage_complete":
-                stage_number = msg.get("stageNumber", 0)
-                is_boss = msg.get("isBoss", False)
-                expected_reward = msg.get("expectedReward", 5)
-                
-                # Initialize time rewards tracking for this room if needed
-                if assigned_room not in room_time_rewards:
-                    room_time_rewards[assigned_room] = {}
-                
-                # Initialize player's earned time if needed
-                if player_id not in room_time_rewards[assigned_room]:
-                    room_time_rewards[assigned_room][player_id] = 0
-                
-                # Check if player has hit the max cap (60 seconds)
-                MAX_TIME_PER_MATCH = 60
-                current_earned = room_time_rewards[assigned_room][player_id]
-                
-                if current_earned >= MAX_TIME_PER_MATCH:
-                    print(f"  ⚠️ Player {player_id} already earned max time ({MAX_TIME_PER_MATCH}s), ignoring stage {stage_number}")
-                else:
-                    # Calculate actual reward (cap at max)
-                    remaining_cap = MAX_TIME_PER_MATCH - current_earned
-                    actual_reward = min(expected_reward, remaining_cap)
-                    
-                    # Update player's earned time
-                    room_time_rewards[assigned_room][player_id] += actual_reward
-                    
-                    # Update match end time for this room
-                    if assigned_room in room_timers:
-                        current_server_time = int(time.time() * 1000)
-                        old_match_end_time = room_timers[assigned_room]["match_end_time"]
-                        new_match_end_time = old_match_end_time + (actual_reward * 1000)
-                        room_timers[assigned_room]["match_end_time"] = new_match_end_time
-                        
-                        print(f"  ✨ STAGE REWARD: {player_id} completed Stage {stage_number} ({'BOSS' if is_boss else 'Normal'})")
-                        print(f"     +{actual_reward}s awarded | Total earned: {room_time_rewards[assigned_room][player_id]}s")
-                        print(f"     New match end time: {new_match_end_time}")
-                        
-                        # Broadcast time reward to all players in room
-                        time_reward_msg = {
-                            "type": "time_reward",
-                            "playerId": player_id,
-                            "stageNumber": stage_number,
-                            "secondsAwarded": actual_reward,
-                            "newMatchEndTime": new_match_end_time,
-                            "totalTimeEarned": room_time_rewards[assigned_room][player_id]
-                        }
-                        await broadcast_to_room(assigned_room, time_reward_msg)
-                    else:
-                        print(f"  ⚠️ No timer found for room {assigned_room}, cannot award time")
-            
-            # ✅ PHASE 3B: Handle time bank requests
-            elif msg_type == "get_time_bank":
-                database_id = msg.get("databaseId", 0)
-                print(f"📥 [{player_id}] Get time bank request (database_id={database_id})")
-                
-                if database_id == 0:
-                    await websocket.send_json({
-                        "type": "time_bank_error",
-                        "error": "Database ID not provided"
-                    })
-                    print(f"❌ [{player_id}] Missing database ID")
-                    continue
-                
-                # Fetch from database
-                bank_info = await get_player_time_bank(database_id)
-                bank_balance = bank_info["balance"]
-                total_earned = bank_info["total_earned"]
-                
-                # Calculate max usable (50% of balance)
-                max_usable = int(bank_balance * MAX_USABLE_PERCENTAGE)
-                
-                # Send response
-                response = {
-                    "type": "time_bank_info",
-                    "bankBalance": bank_balance,
-                    "maxUsable": max_usable,
-                    "totalEarned": total_earned
-                }
-                
-                await websocket.send_json(response)
-                print(f"📤 [{player_id}] Sent time_bank_info: balance={bank_balance}s, max_usable={max_usable}s")
-            
-            # ✅ PHASE 3B: Handle use time bank request
-            elif msg_type == "use_time_bank":
-                database_id = msg.get("databaseId", 0)
-                seconds_to_use = msg.get("secondsToUse", 0)
-                print(f"📥 [{player_id}] Use time bank: {seconds_to_use}s (database_id={database_id})")
-                
-                # Validate
-                if database_id == 0:
-                    await websocket.send_json({
-                        "type": "time_bank_error",
-                        "error": "Database ID not provided"
-                    })
-                    print(f"❌ [{player_id}] Missing database ID")
-                elif seconds_to_use <= 0:
-                    await websocket.send_json({
-                        "type": "time_bank_error",
-                        "error": "Invalid amount"
-                    })
-                    print(f"❌ [{player_id}] Invalid seconds_to_use: {seconds_to_use}")
-                else:
-                    # Deduct from database
-                    result = await deduct_time_bank(database_id, seconds_to_use)
-                    
-                    if result["success"]:
-                        new_balance = result["new_balance"]
-                        
-                        # Find player's room and add time to match
-                        if assigned_room and assigned_room in room_timers:
-                            old_end_time = room_timers[assigned_room]["match_end_time"]
-                            new_end_time = old_end_time + (seconds_to_use * 1000)
-                            room_timers[assigned_room]["match_end_time"] = new_end_time
-                            
-                            print(f"⏰ [{assigned_room}] Added {seconds_to_use}s from time bank")
-                            print(f"   Match end time: {old_end_time} → {new_end_time}")
-                            
-                            # Notify all players in room about timer update
-                            for pid in await get_room_players(assigned_room):
-                                if pid in rooms.get(assigned_room, {}):
-                                    ws = rooms[assigned_room][pid]
-                                    try:
-                                        await ws.send_json({
-                                            "type": "timer_update",
-                                            "newMatchEndTime": new_end_time,
-                                            "reason": f"{player_id} used {seconds_to_use}s from time bank"
-                                        })
-                                    except:
-                                        pass
-                        
-                        # Send confirmation to requester
-                        await websocket.send_json({
-                            "type": "time_bank_used",
-                            "secondsUsed": seconds_to_use,
-                            "newBalance": new_balance
-                        })
-                        
-                        print(f"✅ [{player_id}] Used {seconds_to_use}s from bank. New balance: {new_balance}s")
-                    else:
-                        await websocket.send_json({
-                            "type": "time_bank_error",
-                            "error": result["error"]
-                        })
-                        print(f"❌ [{player_id}] Time bank error: {result['error']}")
-            
-            # ✅ PHASE 2 + 3B: Handle match end notification from client
-            elif msg_type == "match_end":
-                database_id = msg.get("databaseId", 0)
-                time_remaining = msg.get("timeRemaining", 0)
-                time_earned = msg.get("timeEarned", 0)
-                
-                print(f"📥 [{player_id}] Match end: {time_remaining}s remaining, {time_earned}s earned (database_id={database_id})")
-                
-                # ✅ PHASE 3B: Bank the time if there's any remaining
-                if database_id > 0 and time_remaining > 0:
-                    result = await add_time_to_bank(database_id, time_remaining, time_earned)
-                    
-                    if result["success"]:
-                        new_balance = result["new_balance"]
-                        total_earned_lifetime = result["total_earned"]
-                        actual_banked = result["actual_banked"]
-                        
-                        # Send confirmation
-                        await websocket.send_json({
-                            "type": "time_banked",
-                            "secondsBanked": actual_banked,
-                            "totalBankBalance": new_balance,
-                            "lifetimeEarned": total_earned_lifetime
-                        })
-                        
-                        print(f"🏦 [{player_id}] Banked {actual_banked}s. Total balance: {new_balance}s, Lifetime: {total_earned_lifetime}s")
-                    else:
-                        print(f"❌ [{player_id}] Failed to bank time: {result.get('error')}")
-                elif database_id == 0:
-                    print(f"  ⚠️ Missing database ID, cannot bank time")
-                else:
-                    print(f"  ⏱️ No time remaining to bank")
-                
-                # Clean up room timer if it exists
-                if assigned_room in room_timers:
-                    del room_timers[assigned_room]
-                    print(f"  🧹 Cleaned up timer for room {assigned_room}")
-                
-                # ✅ PHASE 3: Clean up time rewards tracking
-                if assigned_room in room_time_rewards:
-                    del room_time_rewards[assigned_room]
-                    print(f"  🧹 Cleaned up time rewards for room {assigned_room}")
-            
-            else:
-                # Relay all other messages (position updates, etc.)
-                await broadcast_to_room(assigned_room, msg, exclude_player=player_id)
-    
-    except WebSocketDisconnect:
-        print(f"🔌 WebSocket disconnected: {player_id}")
-    except Exception as e:
-        print(f"❌ Error for {player_id}: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        metrics["active_connections"] -= 1
-        
-        if assigned_room and player_id:
-            await remove_player_from_room(assigned_room, player_id)
-            
-            print(f"\n❌ Player '{player_id}' disconnected from '{assigned_room}'")
-            
-            await broadcast_to_room(assigned_room, {
-                "type": "leave",
-                "playerId": player_id
-            })
-            
-            remaining_players = await get_room_players(assigned_room)
-            
-            if not remaining_players:
-                print(f"🗑️ Room '{assigned_room}' deleted (empty)\n")
-                
-                # ✅ PHASE 2: Clean up room timer if room is now empty
-                if assigned_room in room_timers:
-                    del room_timers[assigned_room]
-                    print(f"  🧹 Cleaned up timer for empty room {assigned_room}")
-                
-                # ✅ PHASE 3: Clean up time rewards if room is now empty
-                if assigned_room in room_time_rewards:
-                    del room_time_rewards[assigned_room]
-                    print(f"  🧹 Cleaned up time rewards for empty room {assigned_room}")
-                
-                if assigned_room in active_listeners:
-                    active_listeners[assigned_room].cancel()
-                    del active_listeners[assigned_room]
-            else:
-                print(f"  Room '{assigned_room}' now has {len(remaining_players)} player(s)\n")
+        // Unity Build Configuration
+        var buildUrl = "Build";
+        var loaderUrl = buildUrl + "/ChefBet.loader.js";
+        var config = {
+            arguments: [],
+            dataUrl: buildUrl + "/ChefBet.data.unityweb",
+            frameworkUrl: buildUrl + "/ChefBet.framework.js.unityweb",
+            codeUrl: buildUrl + "/ChefBet.wasm.unityweb",
+            streamingAssetsUrl: "StreamingAssets",
+            companyName: "GhoalVerse Games",
+            productName: "Kitchen Rumble",
+            productVersion: "1.0",
+            showBanner: unityShowBanner,
+            autoSyncPersistentDataPath: true,
+        };
 
-# ============== HEALTH & MONITORING ==============
+        // Mobile detection and responsive setup
+        if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+            var meta = document.createElement('meta');
+            meta.name = 'viewport';
+            meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+            document.getElementsByTagName('head')[0].appendChild(meta);
+            container.className = "unity-mobile";
+            canvas.className = "unity-mobile";
+        } else {
+            canvas.style.width = "960px";
+            canvas.style.height = "600px";
+        }
 
-@app.on_event("startup")
-async def startup():
-    print(f"\n{'='*60}")
-    print(f"🚀 Kitchen Rumble Server Starting")
-    print(f"{'='*60}")
-    print(f"   Instance ID: {INSTANCE_ID}")
-    print(f"   Region: Kenya/East Africa")
-    print(f"   Use Redis: {USE_REDIS}")
-    print(f"   Max Players/Room: {MAX_PLAYERS_PER_ROOM}")
-    print(f"{'='*60}\n")
-    
-    if USE_REDIS:
-        await init_redis()
-    
-    # ✅ PHASE 3B: Initialize database connection
-    await init_database()
+        loadingBar.style.display = "block";
 
-@app.on_event("shutdown")
-async def shutdown():
-    global shutdown_flag
-    shutdown_flag = True
-    
-    print(f"\n{'='*60}")
-    print(f"🛑 Shutting down {INSTANCE_ID}...")
-    print(f"{'='*60}")
-    
-    total_connections = 0
-    for room_id, players in list(rooms.items()):
-        for player_id, ws in list(players.items()):
-            try:
-                await ws.send_text(json.dumps({
-                    "type": "server_shutdown",
-                    "message": "Server restarting, please reconnect"
-                }))
-                await ws.close()
-                total_connections += 1
-            except:
-                pass
-    
-    print(f"  ✅ Closed {total_connections} WebSocket connections")
-    
-    for task in active_listeners.values():
-        task.cancel()
-    print(f"  ✅ Cancelled {len(active_listeners)} Redis listeners")
-    
-    # ✅ PHASE 3B: Close database connection pool
-    if db_pool:
-        await db_pool.close()
-        print(f"  ✅ Closed database connection pool")
-    
-    if redis_client:
-        await redis_client.close()
-        print(f"  ✅ Closed Redis connection")
-    
-    print(f"{'='*60}")
-    print(f"✅ {INSTANCE_ID} shutdown complete")
-    print(f"{'='*60}\n")
+        // Load Unity
+        var script = document.createElement("script");
+        script.src = loaderUrl;
+        script.onload = () => {
+            createUnityInstance(canvas, config, (progress) => {
+                progressBarFull.style.width = 100 * progress + "%";
+            }).then((instance) => {
+                loadingBar.style.display = "none";
+                
+                // Set Unity instance globally for both Google Sign-In and WebSocket
+                setUnityInstance(instance);
+                
+                // Fullscreen button handler
+                fullscreenButton.onclick = () => {
+                    instance.SetFullscreen(1);
+                };
 
-def handle_shutdown_signal():
-    asyncio.create_task(shutdown())
+                console.log("✅ Unity loaded successfully");
+                console.log("✅ Google Sign-In SDK available");
+                console.log("✅ WebSocket functionality ready (handled by C# + .jslib)");
 
-loop = asyncio.get_event_loop()
-for sig in (signal.SIGTERM, signal.SIGINT):
-    loop.add_signal_handler(sig, handle_shutdown_signal)
+            }).catch((message) => {
+                alert("Unity failed to load: " + message);
+            });
+        };
 
-@app.get("/")
-async def root():
-    return {
-        "service": "Kitchen Rumble Server",
-        "version": "2.0-production",
-        "region": "Kenya/East Africa",
-        "instance": INSTANCE_ID,
-        "redis_enabled": USE_REDIS,
-        "max_players_per_room": MAX_PLAYERS_PER_ROOM
-    }
-
-@app.get("/health")
-async def health():
-    redis_ok = True
-    
-    if redis_client:
-        try:
-            await redis_client.ping()
-        except:
-            redis_ok = False
-    
-    is_healthy = redis_ok or not USE_REDIS
-    
-    return {
-        "status": "healthy" if is_healthy else "unhealthy",
-        "instance": INSTANCE_ID,
-        "redis": redis_ok if USE_REDIS else "disabled",
-        "active_connections": metrics["active_connections"],
-        "active_rooms": len(rooms)
-    }
-
-@app.get("/ready")
-async def ready():
-    if shutdown_flag:
-        return {"status": "shutting_down"}, 503
-    
-    return {
-        "status": "ready",
-        "instance": INSTANCE_ID,
-        "active_connections": metrics["active_connections"],
-        "active_rooms": len(rooms)
-    }
-
-@app.get("/metrics")
-async def get_metrics():
-    uptime = time.time() - metrics["start_time"]
-    
-    total_rooms_redis = 0
-    if redis_client:
-        try:
-            room_keys = await redis_client.keys("room:*:players")
-            total_rooms_redis = len(room_keys)
-        except:
-            pass
-    
-    return {
-        "instance": INSTANCE_ID,
-        "uptime_seconds": round(uptime, 2),
-        "total_connections": metrics["total_connections"],
-        "active_connections": metrics["active_connections"],
-        "active_rooms_local": len(rooms),
-        "total_rooms_global": total_rooms_redis if USE_REDIS else len(rooms),
-        "messages_relayed": metrics["messages_relayed"],
-        "projectile_hits": metrics["projectile_hits"],
-        "food_spawned": metrics["food_spawned"],
-        "food_removed": metrics["food_removed"]
-    }
+        document.body.appendChild(script);
+    </script>
+</body>
+</html>
