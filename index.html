@@ -92,6 +92,11 @@
             document.getElementsByTagName('head')[0].appendChild(meta);
             container.className = "unity-mobile";
             canvas.className = "unity-mobile";
+
+            // Set initial height to the visible viewport (accounts for browser chrome / WebView insets)
+            var initialHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            container.style.height = initialHeight + 'px';
+            canvas.style.height    = initialHeight + 'px';
         } else {
             canvas.style.width = "960px";
             canvas.style.height = "600px";
@@ -119,6 +124,17 @@
                 console.log("✅ Unity loaded successfully");
                 console.log("✅ Google Sign-In SDK available");
                 console.log("✅ WebSocket functionality ready (handled by C# + .jslib)");
+
+                // Resize Unity canvas when the keyboard opens/closes in WebView
+                if (window.visualViewport) {
+                    window.visualViewport.addEventListener('resize', function () {
+                        var vvHeight = window.visualViewport.height;
+                        container.style.height = vvHeight + 'px';
+                        canvas.style.height    = vvHeight + 'px';
+                        console.log("📱 Viewport resized — canvas height adjusted to: " + vvHeight + "px");
+                    });
+                    console.log("✅ visualViewport keyboard listener registered");
+                }
 
             }).catch((message) => {
                 alert("Unity failed to load: " + message);
